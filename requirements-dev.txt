@@ -1,0 +1,14 @@
+# testing
+pytest>=8.0
+pytest-mock>=3.12
+
+# solidity compilation without Foundry
+py-solc-x>=2.0
+solc-select>=1.0
+
+# static analysis
+slither-analyzer>=0.10
+
+# local chain
+eth-tester>=0.11
+py-evm>=0.10
