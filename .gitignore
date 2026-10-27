@@ -1,0 +1,12 @@
+
+.venv/
+__pycache__/
+*.py[cod]
+.env
+logs/*.log
+.v6cache/
+out/
+cache/
+lib/
+node_modules/
+.DS_Store
