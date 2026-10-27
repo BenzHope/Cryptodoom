@@ -1,0 +1,17 @@
+{
+  "chain": "",
+  "address": "",
+  "kind": "contract",
+  "label": "",
+  "tvl_native": 0.0,
+  "verified": false,
+  "is_proxy": false,
+  "owner": null,
+  "impl": null,
+  "analyzed_utc": "",
+  "engine_version": "",
+  "findings": [],
+  "fired": false,
+  "tx_hashes": [],
+  "log": ""
+}
