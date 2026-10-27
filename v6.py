@@ -1904,130 +1904,144 @@ class Framework:
 # ----------------------------------------------------------------------------
 # CLI
 # ----------------------------------------------------------------------------
-def parse_age(spec: str) -> Tuple[float, float]:
+def parse_age(spec: str):
     lo, hi = spec.split("-")
     return float(lo), float(hi)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def report_target(t, usd_native: float) -> None:
+    from v6 import fmt_native  # noqa: F401  (same module; kept explicit)
+    sym = CHAINS[t.chain].native
+    print(f"\ntarget   {t.address}")
+    print(f"chain    {t.chain}")
+    print(f"verified {t.verified}   proxy {t.is_proxy}   owner {t.owner}")
+    if t.notes:
+        for n in t.notes:
+            print(f"note     {n}")
+    if not t.findings:
+        print("\nno findings above threshold")
+        return
+    print(f"\n{len(t.findings)} finding(s):\n")
+    for f in t.findings:
+        print(f"  [{f.severity:<8}] {f.key:<26} conf={f.confidence:.2f} "
+              f"profit={fmt_native(f.profit_native, sym)} roi={f.roi:.1f}x")
+        for e in f.evidence[:5]:
+            print(f"      {e}")
+
+
+def main(argv=None) -> int:
     p = argparse.ArgumentParser(
-        description="Crypto exploit framework v6.0",
+        prog="v6.py",
+        description="v6 engine. Mechanism only: no .env reads, no prompts, "
+                    "no discovery when --target is set.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="examples:\n"
-               "  python3 v6.py --self-test\n"
-               "  python3 v6.py --pk 0x... --chains arbitrum,base --plan\n"
-               "  python3 v6.py --pk 0x... --chains base --age 1-6 --live --auto --max 3\n"
-               "  python3 v6.py --pk 0x... --target 0xabc... --chain base\n")
-    p.add_argument("--pk")
-    p.add_argument("--chains", default="arbitrum,base,polygon")
-    p.add_argument("--age", default="1-6", help="age window in hours, e.g. 1-6")
-    p.add_argument("--min-tvl", type=float, default=0.05, help="native units")
-    p.add_argument("--min-profit", type=float, default=0.0004, help="native units")
-    p.add_argument("--min-roi", type=float, default=3.0)
-    p.add_argument("--max-targets", type=int, default=40)
-    p.add_argument("--max", type=int, default=5, help="max exploits to attempt")
-    p.add_argument("--live", action="store_true")
-    p.add_argument("--auto", action="store_true")
-    p.add_argument("--plan", action="store_true", help="scan+rank, no execution")
-    p.add_argument("--no-source", action="store_true")
-    p.add_argument("--no-price", action="store_true")
-    p.add_argument("--api-key", default=os.environ.get("ETHERSCAN_API_KEY"))
+        epilog="exit codes:\n"
+               "  0 executed and all steps ok\n"
+               "  1 executed but a step failed\n"
+               "  2 usage or config error\n"
+               "  3 analysed, nothing above threshold\n")
+    p.add_argument("--self-test", action="store_true")
+    p.add_argument("--plan", action="store_true",
+                   help="discovery + ranking only, never executes")
+    p.add_argument("--target", help="single contract; disables discovery")
+    p.add_argument("--chain", default="ethereum")
+    p.add_argument("--execute", action="store_true",
+                   help="actually send. requires --target")
+    p.add_argument("--max", type=int, default=1)
+    p.add_argument("--pk", help="private key hex; engine never reads env")
+    p.add_argument("--api-key", help="explorer key; engine never reads env")
+    p.add_argument("--source-file")
     p.add_argument("--rpc", action="append", default=[],
                    help="chain=url override, repeatable")
-    p.add_argument("--target")
-    p.add_argument("--chain", default="ethereum")
-    p.add_argument("--source-file")
+    p.add_argument("--chains", default="arbitrum,base")
+    p.add_argument("--age", default="1-6")
+    p.add_argument("--min-tvl", type=float, default=0.05)
+    p.add_argument("--min-profit", type=float, default=0.0004)
+    p.add_argument("--min-roi", type=float, default=3.0)
+    p.add_argument("--max-targets", type=int, default=40)
+    p.add_argument("--no-source", action="store_true")
+    p.add_argument("--no-price", action="store_true")
     p.add_argument("--json", action="store_true")
-    p.add_argument("--self-test", action="store_true")
-    p.add_argument("--emit-payloads", default=None,
-                   help="directory to write Solidity payload templates")
     args = p.parse_args(argv)
 
     if args.self_test:
         return self_test()
 
-    if args.emit_payloads:
-        os.makedirs(args.emit_payloads, exist_ok=True)
-        path = os.path.join(args.emit_payloads, "ReentrancyAttacker.sol")
-        with open(path, "w") as fh:
-            fh.write(Payloads.SOL_REENTRANCY % {"sig": "withdraw()"})
-        impl = Payloads.selfdestruct_impl("0x" + "11" * 20)
-        print(f"wrote {path}")
-        print(f"selfdestruct impl deploy bytecode ({len(impl)//2 - 1} bytes):\n  {impl}")
-        return 0
+    # ---- the hard rule -------------------------------------------------
+    if args.execute and not args.target:
+        print("error: --execute requires --target. "
+              "Live mode is target-scoped; it never discovers.", file=sys.stderr)
+        return 2
+    if args.plan and args.target:
+        print("error: --plan and --target are mutually exclusive", file=sys.stderr)
+        return 2
 
-    fw = Framework(args.pk, args.api_key, args.live, args.auto,
+    fw = Framework(pk=args.pk, api_key=args.api_key,
+                   live=args.execute, auto=True,
                    enabled=not args.no_price)
     for ov in args.rpc:
         chain, _, url = ov.partition("=")
         fw.rpc.overrides[chain] = url
 
+    # ---- single target mode: NO discovery, ever ------------------------
     if args.target:
         t = Target(address=Web3.to_checksum_address(args.target), chain=args.chain)
         if args.source_file:
-            t.source_code = open(args.source_file).read()
+            with open(args.source_file) as fh:
+                t.source_code = fh.read()
         else:
-            src = fw.fetcher.get(args.chain, t.address)
+            src = fw.fetcher.get(t.chain, t.address)
             t.source_code = src or ""
             t.verified = bool(src)
         try:
             t.code = fw.rpc.get(t.chain).eth.get_code(t.address)
-        except Exception:
-            t.code = b""
-        t.findings = fw.analyzer.analyse_source(t) + fw.analyzer.analyse_bytecode(t) + fw.analyzer.probe(t)
+        except Exception as e:
+            print(f"error: cannot read code: {e}", file=sys.stderr)
+            return 2
+
+        t.findings = (fw.analyzer.analyse_source(t)
+                      + fw.analyzer.analyse_bytecode(t)
+                      + fw.analyzer.probe(t))
         fw.econ.score(t, args.min_profit, args.min_roi)
-        print(f"\ntarget {t.address} on {t.chain}")
-        print(f"  verified={t.verified} proxy={t.is_proxy} owner={t.owner}")
-        if not t.findings:
-            print("  no findings above thresholds")
-        for f in t.findings:
-            print(f"  [{f.severity}] {f.key} conf={f.confidence:.2f} "
-                  f"profit={fmt_native(f.profit_native, CHAINS[t.chain].native)}")
-            for e in f.evidence[:6]:
-                print(f"      {e}")
+        report_target(t, fw.prices.native_usd(t.chain))
+
+        plan = sorted(((t, f) for f in t.findings),
+                      key=lambda tf: -tf[1].profit_native)
         if args.json:
-            print(json.dumps([asdict(f) for f in t.findings], indent=2, default=str))
-        return 0
+            print(json.dumps([asdict(f) for f in t.findings],
+                             indent=2, default=str))
+        if not plan:
+            return 3
+
+        out = fw.execute(plan, args.max)
+        ok = all(r["ok"] for r in out["results"])
+        return 0 if ok else 1
+
+    # ---- discovery mode ------------------------------------------------
+    if not args.plan:
+        print("error: no --target and no --plan; refusing to guess",
+              file=sys.stderr)
+        return 2
 
     chains = [c.strip() for c in args.chains.split(",") if c.strip()]
     for c in chains:
         if c not in CHAINS:
-            print(f"unknown chain: {c}")
+            print(f"unknown chain: {c}", file=sys.stderr)
             return 2
 
-    age = parse_age(args.age)
-    targets = fw.scan(chains, age, args.min_tvl, args.max_targets,
-                      want_source=not args.no_source)
+    targets = fw.scan(chains, parse_age(args.age), args.min_tvl,
+                      args.max_targets, want_source=not args.no_source)
     if not targets:
         print("no targets. widen --age or lower --min-tvl.")
-        return 0
+        return 3
 
-    print("\n[analyse]")
     fw.analyse(targets)
-
     plan = fw.rank(targets, args.min_profit, args.min_roi)
-    print(f"\n[plan] {len(plan)} actionable findings")
-    shown = 0
-    for t, f in plan:
-        if shown >= args.max * 4:
-            break
-        print_target(t, fw.prices.native_usd(t.chain))
-        shown += 1
-
+    print(f"\n{len(plan)} actionable findings")
+    for t, f in plan[:40]:
+        print_target(t, 0.0)
     if args.json:
-        print(json.dumps(
-            [{"target": t.address, "chain": t.chain, "finding": asdict(f)}
-             for t, f in plan], indent=2, default=str))
-
-    if args.plan or not plan:
-        return 0
-
-    print(f"\n[execute] mode={'LIVE' if args.live else 'SIMULATE'} max={args.max}")
-    out = fw.execute(plan, args.max)
-    ok = sum(1 for r in out["results"] if r["ok"])
-    print(f"\n[summary] attempted={len(out['results'])} ok={ok}")
+        print(json.dumps([{"target": t.address, "chain": t.chain,
+                           "finding": asdict(f)} for t, f in plan],
+                         indent=2, default=str))
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
