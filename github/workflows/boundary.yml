@@ -1,0 +1,42 @@
+name: boundary
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boundary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Boundary tests
+        run: python -m pytest tests/test_boundary.py -q -ra
+
+      - name: Assert the engine has no policy
+        run: |
+          set -e
+          if grep -q "os\.environ" v6.py; then echo "v6.py reads env"; exit 1; fi
+          if grep -q "input(" v6.py;      then echo "v6.py prompts";   exit 1; fi
+          if grep -q "logs/" v6.py;       then echo "v6.py writes logs"; exit 1; fi
+          echo "boundary intact"
