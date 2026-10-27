@@ -1,0 +1,21 @@
+{
+  "chain": "base",
+  "address": "0x4c1a9e0000000000000000000000000000000000",
+  "kind": "pair",
+  "label": "V2pair 0x4c1a9e",
+  "tvl_native": 12.4081,
+  "verified": false,
+  "is_proxy": false,
+  "owner": null,
+  "impl": null,
+  "analyzed_utc": "2026-10-27T00:00:00Z",
+  "engine_version": "6.1.0",
+  "findings": [
+    {"key": "ACCESS_CONTROL_ONCHAIN", "severity": "CRITICAL", "confidence": 0.86},
+    {"key": "REENTRANCY_BYTECODE", "severity": "CRITICAL", "confidence": 0.62},
+    {"key": "DELEGATECALL_HEAVY", "severity": "HIGH", "confidence": 0.70}
+  ],
+  "fired": false,
+  "tx_hashes": [],
+  "log": ""
+}
