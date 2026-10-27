@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------- transport
+requests>=2.31,<3
+urllib3>=2.0,<3
+certifi>=2023.7.22
+charset-normalizer>=3.2
+idna>=3.4
+aiohttp>=3.9
+aiosignal>=1.3
+attrs>=23.1
+frozenlist>=1.4
+multidict>=6.0
+yarl>=1.9
+websockets>=12.0
+
+# ------------------------------------------------------------ eth primitives
+eth-abi>=5.0
+eth-account>=0.11
+eth-hash[pycryptodome]>=0.6
+eth-keyfile>=0.7
+eth-keys>=0.5
+eth-rlp>=1.0
+eth-typing>=4.0
+eth-utils>=4.0
+hexbytes>=1.0
+py-ecc>=7.0
+pycryptodome>=3.19
+rlp>=4.0
+bitarray>=3.0
+cytoolz>=0.12
+toolz>=0.12
+parsimonious>=0.10
+ckzg>=1.0
+pyunormalize>=15.0
+
+# ------------------------------------------------- validation and typing
+pydantic>=2.5
+pydantic-core>=2.14
+annotated-types>=0.6
+typing-extensions>=4.9
+jsonschema>=4.20
+jsonschema-specifications>=2023.11
+referencing>=0.32
+rpds-py>=0.13
+
+# ------------------------------------------------------- wire format
+protobuf>=4.25
+
+# ------------------------------------------------------------- web3 itself
+web3>=6.11,<8
