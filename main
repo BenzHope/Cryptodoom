@@ -1,0 +1,43 @@
+git init -b main
+git config user.name  "<you>"
+git config user.email "<you@example>"
+
+# place .gitignore and .gitattributes FIRST so nothing wrong is ever staged
+# (you already have both)
+
+git add .gitignore .gitattributes
+git commit -m "chore: ignore venv, env, logs, build artefacts"
+
+git switch -c chore/scaffold
+
+# 1. engine contract
+git add v6.py
+git commit -m "engine: never read env, never prompt, never log; --execute requires --target"
+
+# 2. launcher
+git add ops/ scripts/ .env.example
+git commit -m "ops: gated launcher with permission-slip enforcement and dashcam"
+
+# 3. docs
+git add docs/ README.md LICENSE AUTHORIZATION.md
+git commit -m "docs: architecture, safety model, checks reference, dependencies"
+
+# 4. cases
+git add cases/
+git commit -m "cases: engagement template and first entry"
+
+# 5. tests and CI
+git add tests/ .github/
+git commit -m "test: boundary, hash and rule tests; CI workflow"
+
+# 6. deps and harness
+git add requirements.txt requirements-dev.txt verify.py v6_offline.py logs/.gitkeep
+git commit -m "chore: dependency manifests, verifier, offline harness"
+
+git switch main
+git merge --ff-only chore/scaffold
+git branch -d chore/scaffold
+
+git tag -a v6.0.0 -m "engine, gated launcher, boundary tests"
+git remote add origin <your-repo-url>
+git push -u origin main --tags
