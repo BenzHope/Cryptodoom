@@ -2,8 +2,8 @@
 confidence.py - log-odds evidence model.
 
 v6.0 scored findings by addition: base + signals + bonuses, capped at 0.95.
-That model cannot express negative evidence, rewards breadth over
-specificity, and gives one detector the same score as three agreeing.
+That model cannot express negative evidence, rewards breadth over specificity,
+and gives one detector the same score as three agreeing.
 
 This module replaces it. Every confidence is
 
@@ -79,7 +79,7 @@ class Score:
 
 
 # ---------------------------------------------------------------- priors
-# Base rate that the class is genuinely exploitable *given* it was detected.
+# Base rate that the class is genuinely exploitable, GIVEN it was detected.
 PRIOR: Dict[str, float] = {
     "REENTRANCY": 0.25,
     "ACCESS_CONTROL": 0.35,
@@ -91,7 +91,6 @@ PRIOR: Dict[str, float] = {
     "FLASHLOAN_CALLBACK": 0.25,
     "UNCHECKED_CALL": 0.15,
     "TX_ORIGIN": 0.20,
-    # on-chain / bytecode only
     "BROKEN_PROXY": 0.60,
     "PROXY": 0.45,
     "ACCESS_CONTROL_ONCHAIN": 0.45,
@@ -103,8 +102,7 @@ PRIOR: Dict[str, float] = {
 }
 
 # ------------------------------------------------------------- signals
-# Weight is specificity: call{value: is near-proof of an external call,
-# .transfer( is present in almost everything.
+# Weight is specificity. call{value: is near-proof; .transfer( is everywhere.
 SIGNAL: Dict[str, Dict[str, float]] = {
     "REENTRANCY": {
         r"\.call\s*\{": 1.00,
@@ -152,6 +150,7 @@ SIGNAL: Dict[str, Dict[str, float]] = {
 }
 
 # --------------------------------------------------------- mitigations
+# Present in the offending function itself.
 MITIGATION_LOCAL: Dict[str, Dict[str, float]] = {
     "REENTRANCY": {
         r"nonReentrant": -2.20,
@@ -179,6 +178,7 @@ MITIGATION_LOCAL: Dict[str, Dict[str, float]] = {
     },
 }
 
+# Present in the file but not in the offending function.
 MITIGATION_FILE: Dict[str, Dict[str, float]] = {
     "REENTRANCY": {
         r"ReentrancyGuard": -1.20,
@@ -208,10 +208,8 @@ MITIGATION_FILE: Dict[str, Dict[str, float]] = {
     },
 }
 
-# state write observed *after* the external call
 ORDERING: Dict[str, float] = {"REENTRANCY": 1.60}
 
-# nothing at all mitigates it
 UNMITIGATED_BONUS: Dict[str, float] = {
     "REENTRANCY": 0.60,
     "INTEGER_OVERFLOW": 0.90,
@@ -228,7 +226,6 @@ SCOPE_BONUS_PER_FN = 0.25
 SCOPE_BONUS_CAP = 3
 
 # ------------------------------------------------------- corroboration
-# (primary, secondary) -> log-odds. Positive absorbs the secondary.
 CORROBORATION: Dict[Tuple[str, str], float] = {
     ("ACCESS_CONTROL", "ACCESS_CONTROL_ONCHAIN"): 1.50,
     ("UNINITIALIZED_PROXY", "PROXY"): 1.30,
@@ -240,7 +237,7 @@ CORROBORATION: Dict[Tuple[str, str], float] = {
 
 
 def score_rule(rule: Any, src: str, funcs: Sequence[Any]) -> Optional[Score]:
-    """Score one source rule. Returns None if below threshold."""
+    """Score one source rule. None if below the report threshold."""
     sig = SIGNAL.get(rule.key)
     if not sig:
         return None
@@ -275,7 +272,8 @@ def score_rule(rule: Any, src: str, funcs: Sequence[Any]) -> Optional[Score]:
         if ordered:
             es.add("ordering", ORDERING.get(rule.key, 0.0), "store after call")
         if unprotected:
-            es.add("scope", SCOPE_BONUS_PER_FN * min(len(unprotected), SCOPE_BONUS_CAP),
+            es.add("scope",
+                   SCOPE_BONUS_PER_FN * min(len(unprotected), SCOPE_BONUS_CAP),
                    f"{len(unprotected)} unguarded fn(s)")
     else:
         for p, w in filemit.items():
@@ -291,7 +289,6 @@ def score_rule(rule: Any, src: str, funcs: Sequence[Any]) -> Optional[Score]:
     return Score(es.confidence, es.terms, unprotected, ordered, es.explain())
 
 
-# privileged names live in v6.py; duplicated here as data for the scorer
 PRIVILEGED = {
     "withdraw", "withdrawall", "emergencywithdraw", "collect", "collectfees",
     "drain", "mint", "burn", "setprice", "updateoracle", "setfee", "changefee",
@@ -312,6 +309,7 @@ MODIFIER_RE = re.compile(
     r"onlyMinter|onlyKeeper|onlyOperator|onlyGov|onlyDAO|onlyGovernance|"
     r"onlyTimelock|onlyManager|onlyController|onlyRouter|onlyFactory|"
     r"onlyVault|onlyPool|onlyStrategy", re.I)
+
 BODY_GUARD_RE = re.compile(
     r"require\s*\(\s*(_?msg\.sender|_msgSender\(\))|_checkOwner\s*\(|"
     r"_checkRole\s*\(|hasRole\s*\(|require\s*\(\s*owner\s*==", re.I)
@@ -342,11 +340,7 @@ def score_access_control(funcs: Sequence[Any]) -> Optional[Score]:
 
 
 def merge_corroboration(findings: List[Any]) -> List[Any]:
-    """Fold bytecode/on-chain findings into what they corroborate.
-
-    Corroboration is evidence about an existing finding, not a finding.
-    Absorbed findings are removed so claims are not double-counted.
-    """
+    """Fold bytecode/on-chain findings into what they corroborate."""
     by_key: Dict[str, List[Any]] = {}
     for f in findings:
         by_key.setdefault(f.key, []).append(f)
@@ -371,6 +365,32 @@ def recompute(finding: Any) -> None:
     if not getattr(finding, "evidence_terms", None):
         return  # nothing to recompute; keep the assigned confidence
     es = EvidenceSet(prior=PRIOR.get(finding.key, 0.20))
-    es.terms = list(getattr(finding, "evidence_terms", []))
+    es.terms = list(finding.evidence_terms)
     finding.confidence = es.confidence
     finding.evidence_summary = es.explain()
+
+
+if __name__ == "__main__":
+    CASES = [
+        ("reentrancy / vulnerable", 0.25, [("signal", 1.00, "call{"),
+                                           ("unmitigated", 0.60, "-"),
+                                           ("ordering", 1.60, "store after call"),
+                                           ("scope", 0.25, "1 unguarded fn")]),
+        ("reentrancy / guarded", 0.25, [("signal", 1.00, "call{"),
+                                        ("mitigation_local", -2.20, "nonReentrant")]),
+        ("access control / 2 naked", 0.35, [("signal", 1.40, "naked privileged"),
+                                            ("scope", 0.50, "2 naked fns")]),
+        ("overflow / pre-0.8", 0.30, [("signal", 1.00, "+="),
+                                      ("unmitigated", 0.90, "no SafeMath")]),
+        ("oracle / no TWAP", 0.15, [("signal", 1.80, "getReserves"),
+                                    ("unmitigated", 0.50, "-")]),
+    ]
+    print(f"{'case':<28}{'confidence':>11}  verdict")
+    print("-" * 52)
+    for name, prior, terms in CASES:
+        es = EvidenceSet(prior=prior)
+        for k, w, d in terms:
+            es.add(k, w, d)
+        v = es.confidence
+        print(f"{name:<28}{v:>11.4f}  "
+              f"{'report' if v >= REPORT_THRESHOLD else 'drop'}")
