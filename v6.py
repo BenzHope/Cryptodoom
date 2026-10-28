@@ -46,6 +46,8 @@ from eth_account import Account
 from web3 import Web3
 from web3.exceptions import ContractLogicError
 
+import confidence
+
 ZERO = "0x" + "00" * 20
 DEAD = "0x000000000000000000000000000000000000dEaD"
 MAX_UINT = (1 << 256) - 1
@@ -688,6 +690,8 @@ class Finding:
     confidence: float
     desc: str
     evidence: List[str] = field(default_factory=list)
+    evidence_terms: List[Any] = field(default_factory=list)
+    evidence_summary: str = ""
     functions: List[str] = field(default_factory=list)
     claim: float = 0.0
     drainable_native: float = 0.0
@@ -702,6 +706,22 @@ class Finding:
     @property
     def worthwhile(self) -> bool:
         return self.profit_native > 0
+
+def _finding_from(rule, score) -> Finding:
+    """Build a Finding from a confidence.Score. Confidence is derived, never guessed."""
+    return Finding(
+        key=rule.key,
+        severity=rule.severity,
+        confidence=score.confidence,
+        desc=rule.desc,
+        evidence=[str(t) for t in score.terms],
+        evidence_terms=score.terms,
+        evidence_summary=score.summary,
+        functions=score.unprotected[:8],
+        claim=rule.claim,
+        payout=rule.payout,
+    )
+
 
 
 class Analyzer:
@@ -723,94 +743,23 @@ class Analyzer:
 
         for rule in RULES:
             if rule.key == "ACCESS_CONTROL":
-                out.extend(self._access_control(rule, src, funcs))
-                continue
-            if rule.needs_pragma_below and pragma and not version_lt(rule.needs_pragma_below, pragma):
-                # compiler already protects, but only skip if no SafeMath gap either
-                if pragma >= rule.needs_pragma_below:
-                    continue
-
-            sigs = rule.sig_compiled
-            mits = rule.mit_compiled
-
-            hit_sigs = [p.pattern for p in sigs if p.search(src)]
-            if not hit_sigs:
-                continue
-            hit_mits = [p.pattern for p in mits if p.search(src)]
-
-            unprotected: List[str] = []
-            ordered = False
-            if rule.scope == "function":
-                for f in funcs:
-                    if not any(p.search(f.text) for p in sigs):
-                        continue
-                    if any(p.search(f.header) for p in mits):
-                        continue
-                    if any(p.search(f.body) for p in mits):
-                        continue
-                    unprotected.append(f.name)
-                    if rule.order_signals and any(
-                        re.search(o, f.body, re.I) for o in rule.order_signals
-                    ):
-                        ordered = True
-
-            conf = rule.base_conf
-            conf += min(len(hit_sigs), 4) * rule.conf_signal
-            if not hit_mits:
-                conf += rule.conf_unmitigated
-            if rule.scope == "function" and unprotected:
-                conf += rule.conf_scoped
-            if ordered:
-                conf += rule.conf_ordered
-            conf = min(conf, rule.max_conf)
-
-            if conf < 0.60:
+                s = confidence.score_access_control(funcs)
+                if s:
+                    out.append(_finding_from(rule, s))
                 continue
 
-            ev = [f"signal: {s}" for s in hit_sigs[:4]]
-            ev += [f"mitigation: {m}" for m in hit_mits[:3]]
-            if ordered:
-                ev.append("state write follows external call")
-            out.append(Finding(
-                key=rule.key, severity=rule.severity, confidence=round(conf, 2),
-                desc=rule.desc, evidence=ev, functions=unprotected[:8],
-                claim=rule.claim, payout=rule.payout,
-            ))
+            if rule.needs_pragma_below and pragma and pragma >= rule.needs_pragma_below:
+                continue
 
-        # pragma awareness is a mitigation, so overflow is dropped for >=0.8
+            s = confidence.score_rule(rule, src, funcs)
+            if s:
+                out.append(_finding_from(rule, s))
+
         if pragma and pragma >= (0, 8, 0):
             out = [f for f in out if f.key != "INTEGER_OVERFLOW"]
         return out
 
-    def _access_control(self, rule: Rule, src: str, funcs: List[Fn]) -> List[Finding]:
-        mit = [re.compile(p, re.I) for p in
-               (r"onlyOwner", r"onlyAdmin", r"onlyRole", r"hasRole", r"auth\b",
-                r"requiresAuth", r"_checkOwner", r"onlyMinter", r"onlyKeeper",
-                r"onlyOperator", r"onlyGov", r"onlyDAO", r"onlyGovernance",
-                r"onlyTimelock", r"onlyManager", r"onlyController", r"onlyRouter",
-                r"onlyFactory", r"onlyVault", r"onlyPool", r"onlyStrategy")]
-        body_guard = [re.compile(p, re.I) for p in
-                      (r"require\s*\(\s*(_?msg\.sender|_msgSender\(\))",
-                       r"_checkOwner\s*\(", r"_checkRole\s*\(", r"hasRole\s*\(",
-                       r"require\s*\(\s*owner\s*==")]
-        naked: List[str] = []
-        for f in funcs:
-            if f.name.lower() not in PRIVILEGED:
-                continue
-            if any(p.search(f.header) for p in mit):
-                continue
-            if any(p.search(f.body) for p in body_guard):
-                continue
-            naked.append(f.name)
-        if not naked:
-            return []
-        conf = min(0.95, 0.62 + 0.04 * len(naked))
-        return [Finding(
-            key="ACCESS_CONTROL", severity="CRITICAL", confidence=round(conf, 2),
-            desc="Privileged function(s) with no access modifier",
-            evidence=[f"naked: {n}" for n in naked[:6]],
-            functions=naked[:8], claim=0.95, payout="direct",
-        )]
+    
 
     # ---- bytecode ---------------------------------------------------------
     def analyse_bytecode(self, target: "Target") -> List[Finding]:
@@ -818,10 +767,9 @@ class Analyzer:
         if len(code) < 64:
             return []
         ops = disassemble(code)
-        names = [o.name for o in ops]
         counts: Dict[str, int] = {}
-        for n in names:
-            counts[n] = counts.get(n, 0) + 1
+        for o in ops:
+            counts[o.name] = counts.get(o.name, 0) + 1
         out: List[Finding] = []
 
         calls = counts.get("CALL", 0) + counts.get("CALLCODE", 0)
@@ -829,24 +777,42 @@ class Analyzer:
         delegates = counts.get("DELEGATECALL", 0)
 
         if delegates >= 3:
+            es = confidence.EvidenceSet(prior=confidence.PRIOR["DELEGATECALL_HEAVY"])
+            es.add("bytecode", 1.80, f"DELEGATECALL x{delegates}")
+            if delegates >= 6:
+                es.add("bytecode", 0.60, "x6 or more")
             out.append(Finding(
-                key="DELEGATECALL_HEAVY", severity="HIGH", confidence=0.70,
+                key="DELEGATECALL_HEAVY", severity="HIGH",
+                confidence=es.confidence,
                 desc=f"{delegates} DELEGATECALL sites - proxy / library dispatch",
-                evidence=[f"DELEGATECALL x{delegates}"], claim=0.5, payout="state",
-            ))
+                evidence=[str(t) for t in es.terms],
+                evidence_terms=es.terms, evidence_summary=es.explain(),
+                claim=0.5, payout="state"))
+
         if sstores and calls / sstores >= 3.0:
+            es = confidence.EvidenceSet(prior=confidence.PRIOR["REENTRANCY_BYTECODE"])
+            es.add("bytecode", 1.60, f"CALL:SSTORE {calls / sstores:.1f}")
+            if calls / sstores >= 5.0:
+                es.add("bytecode", 0.50, "ratio 5 or more")
             out.append(Finding(
-                key="REENTRANCY_BYTECODE", severity="HIGH", confidence=0.62,
+                key="REENTRANCY_BYTECODE", severity="HIGH",
+                confidence=es.confidence,
                 desc=f"CALL:SSTORE ratio {calls / sstores:.1f} - store-after-call shape",
-                evidence=[f"CALL x{calls}", f"SSTORE x{sstores}"],
-                claim=0.5, payout="direct",
-            ))
+                evidence=[str(t) for t in es.terms],
+                evidence_terms=es.terms, evidence_summary=es.explain(),
+                claim=0.5, payout="direct"))
+
         if counts.get("SELFDESTRUCT", 0):
+            es = confidence.EvidenceSet(prior=confidence.PRIOR["SELFDESTRUCT_PRESENT"])
+            es.add("bytecode", 1.50, "SELFDESTRUCT opcode")
             out.append(Finding(
-                key="SELFDESTRUCT_PRESENT", severity="MEDIUM", confidence=0.80,
+                key="SELFDESTRUCT_PRESENT", severity="MEDIUM",
+                confidence=es.confidence,
                 desc="SELFDESTRUCT opcode present",
-                evidence=["SELFDESTRUCT"], claim=0.0, payout="direct",
-            ))
+                evidence=[str(t) for t in es.terms],
+                evidence_terms=es.terms, evidence_summary=es.explain(),
+                claim=0.0, payout="direct"))
+
         return out
 
     # ---- on-chain ---------------------------------------------------------
@@ -962,9 +928,14 @@ class Analyzer:
         out: List[Finding] = []
         if naked:
             conf = min(0.95, 0.70 + 0.04 * len(naked))
+            es = confidence.EvidenceSet(prior=confidence.PRIOR["ACCESS_CONTROL_ONCHAIN"])
+            es.add("onchain", 1.60, "executes from a random caller")
+            es.add("scope", 0.25 * min(len(naked), 3), f"{len(naked)} fn(s)")
             out.append(Finding(
                 key="ACCESS_CONTROL_ONCHAIN", severity="CRITICAL",
-                confidence=round(conf, 2),
+                confidence=es.confidence,
+                evidence_terms=es.terms,
+                evidence_summary=es.explain(),
                 desc="Function(s) execute successfully from an arbitrary caller",
                 evidence=[f"callable by anyone: {n}" for n in naked[:6]],
                 functions=naked, claim=0.9, payout="direct",
@@ -1567,8 +1538,8 @@ def print_target(t: Target, usd: float) -> None:
               f"gas={fmt_native(f.gas_cost_native, CHAINS[t.chain].native)} "
               f"profit={fmt_native(f.profit_native, CHAINS[t.chain].native)} "
               f"roi={f.roi:.1f}x {flag}")
-        if f.evidence:
-            print(f"          {', '.join(f.evidence[:5])}")
+        if f.evidence_summary:
+            print(f"          {f.evidence_summary}")
 
 
 # ----------------------------------------------------------------------------
@@ -1791,6 +1762,8 @@ class Framework:
             t.findings += self.analyzer.analyse_source(t)
             t.findings += self.analyzer.analyse_bytecode(t)
             t.findings += self.analyzer.probe(t)
+            # corroboration is evidence, not a finding — fold and absorb
+            t.findings = confidence.merge_corroboration(t.findings)
             if i % 10 == 0:
                 print(f"  analysed {i}/{len(targets)}")
 
