@@ -1,4 +1,5 @@
 """Fails the build if the engine creeps into policy."""
+import os
 import pathlib
 import re
 import subprocess
@@ -8,6 +9,15 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ENGINE = (ROOT / "v6.py").read_text()
 
+
+def _strip_prose(text: str) -> str:
+    """Remove docstrings, string literals and comments, leaving code only."""
+    text = re.sub(r'"""[\s\S]*?"""', "", text)
+    text = re.sub(r"'[^'\n]*'|\"[^\"\n]*\"", "", text)
+    return re.sub(r"#[^\n]*", "", text)
+
+
+# ----------------------------------------------------------- engine hygiene
 
 def test_engine_does_not_read_env_for_policy():
     hits = re.findall(r"os\.environ(?:\.get)?\[?\(?['\"][A-Z_]+['\"]", ENGINE)
@@ -21,7 +31,8 @@ def test_engine_never_prompts():
 def test_engine_never_writes_logs():
     assert "logs/" not in _strip_prose(ENGINE), \
         "engine writes logs; ops/ owns the dashcam"
-    
+
+
 def test_engine_does_not_import_ops():
     assert "from ops" not in ENGINE
     assert "import ops" not in ENGINE
@@ -31,12 +42,6 @@ def test_execute_requires_target():
     assert "--execute requires --target" in ENGINE
 
 
-def _strip_prose(text: str) -> str:
-    text = re.sub(r'"""[\s\S]*?"""', "", text)
-    text = re.sub(r"'[^'\n]*'|\"[^\"\n]*\"", "", text)
-    return re.sub(r"#[^\n]*", "", text)
-
-
 def test_engine_does_not_load_dotenv():
     assert "load_dotenv" not in ENGINE
     assert "dotenv" not in ENGINE
@@ -44,6 +49,9 @@ def test_engine_does_not_load_dotenv():
 
 def test_engine_does_not_reference_env_file_by_path():
     assert ".env" not in _strip_prose(ENGINE)
+
+
+# ------------------------------------------------------------------ launcher
 
 def test_ops_files_exist():
     for rel in ("ops/runbook.sh", "ops/gates.sh", "ops/log.sh", "ops/RUNBOOK.md"):
@@ -68,7 +76,6 @@ def test_ops_scripts_are_committed_executable():
 
 def test_ops_scripts_are_runnable_locally():
     """Soft check: skips on a noexec filesystem such as /sdcard."""
-    import os
     missing = [p for p in ("ops/runbook.sh", "ops/gates.sh", "ops/log.sh")
                if (ROOT / p).is_file() and not os.access(ROOT / p, os.X_OK)]
     if missing:
@@ -82,6 +89,8 @@ def test_gates_has_all_rungs():
         assert f"{fn}()" in gates, f"gates.sh missing {fn}"
 
 
+# -------------------------------------------------------------------- config
+
 def test_env_example_has_required_gate_keys():
     example = (ROOT / ".env.example").read_text()
     for key in ("AUTHORIZED", "AUTH_FILE", "CONFIRM_LIVE", "LIVE_CHAIN",
@@ -91,4 +100,5 @@ def test_env_example_has_required_gate_keys():
 
 def test_default_is_off():
     example = (ROOT / ".env.example").read_text()
-    assert re.search(r'^AUTHORIZED="no"', example, re.M), "AUTHORIZED must default to no"
+    assert re.search(r'^AUTHORIZED="no"', example, re.M), \
+        "AUTHORIZED must default to no"
