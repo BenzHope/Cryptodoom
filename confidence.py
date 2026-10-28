@@ -368,6 +368,8 @@ def merge_corroboration(findings: List[Any]) -> List[Any]:
 
 
 def recompute(finding: Any) -> None:
+    if not getattr(finding, "evidence_terms", None):
+        return  # nothing to recompute; keep the assigned confidence
     es = EvidenceSet(prior=PRIOR.get(finding.key, 0.20))
     es.terms = list(getattr(finding, "evidence_terms", []))
     finding.confidence = es.confidence
