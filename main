@@ -41,3 +41,7 @@ git branch -d chore/scaffold
 git tag -a v6.0.0 -m "engine, gated launcher, boundary tests"
 git remote add origin <your-repo-url>
 git push -u origin main --tags
+
+git add tests/test_boundary.py
+git commit -m "test: check git index mode, not filesystem; split dotenv check"
+git push
