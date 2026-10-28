@@ -45,3 +45,7 @@ git push -u origin main --tags
 git add tests/test_boundary.py
 git commit -m "test: check git index mode, not filesystem; split dotenv check"
 git push
+
+git add confidence.py
+git commit -m "confidence: log-odds evidence model with priors and negative evidence"
+git push
