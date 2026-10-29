@@ -1,3 +1,4 @@
+
 git init -b main
 git config user.name  "<you>"
 git config user.email "<you@example>"
@@ -49,3 +50,6 @@ git push
 git add confidence.py
 git commit -m "confidence: log-odds evidence model with priors and negative evidence"
 git push
+
+cd ~/Cryptodoom
+git pull
