@@ -1,0 +1,17 @@
+cd ~/Cryptodoom
+cat > .gitignore <<'EOF'
+.venv/
+__pycache__/
+*.py[cod]
+.env
+key.line
+*.log
+.v6cache/
+out/
+cache/
+lib/
+node_modules/
+.DS_Store
+EOF
+git add .gitignore
+git commit -m "chore: gitignore venv, env, logs, caches"
